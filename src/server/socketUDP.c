@@ -19,7 +19,7 @@ unsigned char serverListenUDP(socketServer *server){
 
 	if(server->lastBufferLength >= 0){
 		size_t i;
-		//Loop through all the connected clients! We continue looping in case their are users to disconnect.
+		//Loop through all the connected clients! We continue looping in case there are users to disconnect.
 		for(i = 1; i < server->connectionHandler.size; ++i){
 			//If this client has sent something, keep their I.D.!
 			if(memcmp(&tempInfo.addr, &(server->connectionHandler.info[i].addr), tempInfo.addrSize) == 0){
