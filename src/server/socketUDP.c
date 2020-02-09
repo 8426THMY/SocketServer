@@ -7,99 +7,121 @@
 #include "socketShared.h"
 
 
-unsigned char serverListenUDP(socketServer *server){
-	//Store information pertaining to whoever sent the data!
-	socketInfo tempInfo;
-	tempInfo.id = 0;
-	memset(&tempInfo.addr, 0, sizeof(tempInfo.addr));
-	tempInfo.addrSize = sizeof(tempInfo.addr);
+return_t serverListenUDP(socketHandler *handler){
+	return(0);
+}
 
-	//Fill the buffer with incoming data!
-	server->lastBufferLength = recvfrom(server->connectionHandler.fds[0].fd, server->lastBuffer, server->maxBufferSize, 0, (struct sockaddr *)&tempInfo.addr, &tempInfo.addrSize);
-
-	if(server->lastBufferLength >= 0){
-		size_t i;
-		//Loop through all the connected clients! We continue looping in case there are users to disconnect.
-		for(i = 1; i < server->connectionHandler.size; ++i){
-			//If this client has sent something, keep their I.D.!
-			if(memcmp(&tempInfo.addr, &(server->connectionHandler.info[i].addr), tempInfo.addrSize) == 0){
-				tempInfo.id = server->connectionHandler.info[i].id;
-
-			//If this client has timed out, disconnect them!
-			#warning "UDP timeout isn't implemented yet!"
-			}else if(0){
-				serverDisconnectUDP(server, &server->connectionHandler.info[i]);
-				--i;
-			}
-		}
-
-		//If this client isn't connected, add them to the connectionHandler!
-		if(tempInfo.id == 0){
-			handlerAdd(&server->connectionHandler, NULL, &tempInfo);
-		}
-
-
-		//The client has sent something, so add it to their buffer array!
-		if(server->lastBufferLength > 0){
-			server->lastBuffer[server->lastBufferLength] = '\0';
-			//Add one to the length because we need to get the null-terminator.
-			socketInfoBufferAdd(&server->connectionHandler.info[server->connectionHandler.idLinks[tempInfo.id]], server->lastBuffer, server->lastBufferLength + 1);
-
-		//The client has disconnected, so disconnect them from our side!
-		}else{
-			serverDisconnectUDP(server, &server->connectionHandler.info[server->connectionHandler.idLinks[tempInfo.id]]);
-		}
-
-	//There was an error, so disconnect the client!
-	}else{
-		const int tempErrorID = serverGetLastError();
-		if(tempErrorID != EWOULDBLOCK && tempErrorID != ECONNRESET){
-			serverPrintError("recvfrom()", tempErrorID);
-			serverDisconnectUDP(server, &tempInfo);
-
-			return(0);
-		}
+// Send data to a socket.
+return_t serverSendUDP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+	if(sendto(socketHandlerMasterHandle(handler)->fd, buffer, bufferLength, 0, (struct sockaddr *)&client->address, client->addressSize) < 0){
+		#ifdef SOCKET_DEBUG
+		serverPrintError("send()", serverGetLastError());
+		#endif
+		return(0);
 	}
-
 
 	return(1);
 }
 
-//Send a user a message!
-unsigned char serverSendUDP(const socketServer *server, const socketInfo *client, const char *buffer, const size_t bufferLength){
-	if(client->id < server->connectionHandler.capacity && server->connectionHandler.idLinks[client->id] != 0){
-		//If the client exists, send the buffer to them!
-		if(sendto(server->connectionHandler.fds[0].fd, buffer, bufferLength, 0, (struct sockaddr *)&client->addr, client->addrSize) >= 0){
-			return(1);
+// Disconnect a socket.
+void serverDisconnectUDP(socketHandler *handler, socketInfo *client){
+	socketHandlerRemove(handler, client);
+}
+
+// Shutdown the server.
+void serverCloseUDP(socketHandler *handler){
+	socketInfo *curInfo = &handler->info[1];
+	const socketInfo *lastInfo = &handler->info[handler->nfds];
+
+	// Disconnect all of the clients.
+	for(; curInfo < lastInfo; ++curInfo){
+		serverDisconnectUDP(handler, curInfo);
+	}
+
+	socketHandlerDelete(handler);
+}
+
+#if 0
+return_t serverListenUDP(socketHandler *handler){
+	// Keep receiving data while the buffer is not empty.
+	for(;;){
+		socketInfo newInfo;
+		newInfo.addressSize = sizeof(struct sockaddr);
+
+		newInfo.lastBufferLength = recvfrom(
+			socketHandlerMasterHandle(handler)->fd, newInfo.lastBuffer, SERVER_MAX_BUFFER_SIZE, 0,
+			(struct sockaddr *)&newInfo.address, &newInfo.addressSize
+		);
+
+		// If no data was received, we can exit the loop.
+		if(newInfo.lastBufferLength <= 0){
+			// Check whether there were any errors that caused us to stop receiving.
+			const int errorID = serverGetLastError();
+			if(errorID != EWOULDBLOCK && errorID != ECONNRESET){
+				#ifdef SERVER_DEBUG
+				serverPrintError("recvfrom()", errorID);
+				#endif
+				return(0);
+			}
+
+			break;
+
+		// Otherwise, search the connection handler
+		// for our socket and set its buffer.
 		}else{
-			serverPrintError("sendto()", serverGetLastError());
+			socketInfo *curInfo = &handler->info[1];
+			size_t remainingSockets = handler->nfds - 1;
+
+			// Find the new socket if we've already received data from it.
+			while(remainingSockets > 0){
+				if(socketInfoValid(curInfo)){
+					// If the socket already exists, exit the loop.
+					if(
+						newInfo.addressSize == curInfo->addressSize &&
+						memcmp(&newInfo.address, &curInfo->address, newInfo.addressSize)
+					){
+						break;
+					}
+					--remainingSockets;
+				}
+				++curInfo;
+			}
+
+			// If the socket is new, add it to the connection handler!
+			if(remainingSockets == 0){
+				socketHandle newHandle;
+				const return_t success = (
+					newInfo.flags     = SERVER_SOCKET_INFO_CONNECTED,
+					newHandle.events  = POLLIN | POLLHUP,
+					newHandle.revents = 0,
+					socketHandlerAdd(handler, &newHandle, &newInfo)
+				);
+				#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
+				// Memory allocation failure.
+				if(success < 0){
+					return(-1);
+				}
+				#else
+				// The connection handler is full.
+				if(success == 0){
+					#ifdef SERVER_DEBUG
+					puts("Warning: Rejected data from new socket - connection handler is full.\n");
+					#endif
+					continue;
+				}
+				#endif
+
+				// Keep a pointer to the new socket.
+				curInfo = handler->lastInfo;
+			}
+
+			// Update the socket's state.
+			curInfo->lastBufferLength = newInfo.lastBufferLength;
+			memcpy(curInfo->lastBuffer, newInfo.lastBuffer, newInfo.lastBufferLength);
+			flagsSet(curInfo->flags, SERVER_SOCKET_INFO_SENT_DATA);
 		}
-	}else{
-		printf("Error: Tried to send data to or from an invalid address.\n");
 	}
 
-	return(0);
+	return(1);
 }
-
-//Disconnect a user!
-void serverDisconnectUDP(socketServer *server, const socketInfo *client){
-	if(client->id < server->connectionHandler.capacity && server->connectionHandler.idLinks[client->id] != 0){
-		if(server->discFunc != NULL){
-			(*server->discFunc)(server, client);
-		}
-
-		handlerRemove(&server->connectionHandler, client->id);
-	}
-}
-
-//Shutdown the server!
-void serverCloseUDP(socketServer *server){
-	size_t i = server->connectionHandler.size;
-	while(i > 1){
-		--i;
-		serverDisconnectUDP(server, &server->connectionHandler.info[i]);
-	}
-	handlerClear(&server->connectionHandler);
-
-	free(server->lastBuffer);
-}
+#endif

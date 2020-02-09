@@ -7,161 +7,179 @@
 #include "socketShared.h"
 
 
-unsigned char serverSetup(){
-	#ifdef _WIN32
-	//Initialize the Winsock DLL.
+// Forward-declare any helper functions!
+static int getAddressFamily(const char *ip);
+static return_t setNonBlockMode(const int fd, unsigned long mode);
+
+
+#ifdef _WIN32
+// Initialize the Winsock API.
+return_t serverSetup(){
 	WSADATA wsaData;
 	int wsaError = WSAStartup(WS_VERSION, &wsaData);
 	if(wsaError != 0){
+		#ifdef SERVER_DEBUG
 		serverPrintError("WSAStartup()", serverGetLastError());
+		#endif
 
 		return(0);
 	}
+
+	return(1);
+}
+#endif
+
+
+
+void serverConfigInit(socketServerConfig *cfg, const int type, const int protocol){
+	cfg->type = type;
+	cfg->protocol = protocol;
+	cfg->ip[0] = '\0';
+	cfg->port = SERVER_DEFAULT_PORT;
+}
+
+return_t serverInit(socketServer *server, socketServerConfig cfg){
+	int af;
+	socketHandle masterHandle;
+	socketInfo masterInfo;
+
+
+	server->type = cfg.type;
+	server->protocol = cfg.protocol;
+
+
+	// Check the address family that the specified IP is using.
+	af = getAddressFamily(cfg.ip);
+
+	// Create a TCP/UDP socket that can be bound to IPv4 or IPv6 addresses.
+	masterHandle.fd = socket(af, cfg.type, cfg.protocol);
+	if(masterHandle.fd == INVALID_SOCKET){
+		#ifdef SERVER_DEBUG
+		serverPrintError("socket()", serverGetLastError());
+		#endif
+		return(0);
+	}
+	masterHandle.events = POLLIN;
+	masterHandle.revents = 0;
+
+
+	// If SERVER_POLL_TIMEOUT is not equal to 0, set the timeout for "recvfrom()".
+	if(SERVER_POLL_TIMEOUT != 0){
+		#ifdef _WIN32
+		const long timeout = SERVER_POLL_TIMEOUT;
+		#else
+		const struct timeval timeout = {
+			.tv_sec  = SERVER_POLL_TIMEOUT_SEC,
+			.tv_usec = SERVER_POLL_TIMEOUT_USEC
+		};
+		#endif
+		if(setsockopt(masterHandle.fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout)) == SOCKET_ERROR){
+			#ifdef SERVER_DEBUG
+			serverPrintError("setsockopt()", serverGetLastError());
+			#endif
+			return(0);
+		}
+	}else{
+		setNonBlockMode(masterHandle.fd, 1);
+	}
+
+
+	// Store the host's address depending on its IP version.
+	if(af == AF_INET){
+		struct sockaddr_in hostAddr4;
+		if(!inet_pton(af, cfg.ip, (char *)&(hostAddr4.sin_addr))){
+			hostAddr4.sin_addr.s_addr = INADDR_ANY;
+			strcpy(cfg.ip, "INADDR_ANY");
+		}
+		hostAddr4.sin_family = af;
+		hostAddr4.sin_port = htons(cfg.port);
+
+		masterInfo.address = *((struct sockaddr_storage *)&hostAddr4);
+		masterInfo.addressSize = sizeof(struct sockaddr_in);
+	}else if(af == AF_INET6){
+		struct sockaddr_in6 hostAddr6;
+		memset(&hostAddr6, 0, sizeof(struct sockaddr_in6));
+		if(!inet_pton(af, cfg.ip, (char *)&(hostAddr6.sin6_addr))){
+			hostAddr6.sin6_addr = in6addr_any;
+			strcpy(cfg.ip, "in6addr_any");
+		}
+		hostAddr6.sin6_family = af;
+		hostAddr6.sin6_port = htons(cfg.port);
+
+		masterInfo.address = *((struct sockaddr_storage *)&hostAddr6);
+		masterInfo.addressSize = sizeof(struct sockaddr_in6);
+	}
+
+
+	// Bind the master socket to the host's address!
+	if(bind(masterHandle.fd, (struct sockaddr *)&masterInfo.address, sizeof(struct sockaddr_storage)) == SOCKET_ERROR){
+		#ifdef SERVER_DEBUG
+		serverPrintError("bind()", serverGetLastError());
+		#endif
+		return(0);
+	}
+
+	// Start listening for connections if the socket is using TCP!
+	if(cfg.protocol == IPPROTO_TCP){
+		if(listen(masterHandle.fd, SOMAXCONN) == SOCKET_ERROR){
+			#ifdef SERVER_DEBUG
+			serverPrintError("listen()", serverGetLastError());
+			#endif
+			return(0);
+		}
+	}
+
+	// Initialize our connection handler and push the master socket into it!
+	if(!socketHandlerInit(&server->connectionHandler, SERVER_MAX_SOCKETS, &masterHandle, &masterInfo)){
+		#ifdef SERVER_DEBUG
+		puts("Error: Failed to initialize connection handler.\n");
+		#endif
+		return(0);
+	}
+
+
+	#ifdef SERVER_DEBUG
+	printf(
+		"Server initialized successfully.\n\n"
+		"Listening on %s:%u...\n\n\n", cfg.ip, cfg.port
+	);
 	#endif
 
-	return(1);
-}
-
-
-unsigned char serverInit(socketServer *server, const int type, const int protocol, char *ip, size_t ipLength, unsigned short port, size_t bufferSize,
-                         void (*discFunc)(socketServer *server, const socketInfo *client)){
-
-	//Set the server details!
-	char tempIP[46];
-	if(ip != NULL && ipLength < 46){
-		memcpy(tempIP, ip, ipLength);
-		tempIP[ipLength] = '\0';
-	}else{
-		tempIP[0] = '\0';
-	}
-
-	server->type = type;
-	server->protocol = protocol;
-
-	server->maxBufferSize = bufferSize;
-
-
-	//Check the address family that the specified I.P. is using.
-	char tempBuffer[16];
-	int af;
-	if(inet_pton(AF_INET, tempIP, tempBuffer)){
-		af = AF_INET;
-	}else if(inet_pton(AF_INET6, tempIP, tempBuffer)){
-		af = AF_INET6;
-	}else{
-		af = DEFAULT_ADDRESS_FAMILY;
-	}
-
-
-	//Create a TCP/UDP socket that can be bound to IPv4 or IPv6 addresses.
-	struct pollfd masterFD;
-	masterFD.fd = socket(af, type, protocol);
-	if(masterFD.fd == INVALID_SOCKET){
-		serverPrintError("socket()", serverGetLastError());
-
-		return(0);
-	}
-	masterFD.events = POLLIN;
-	masterFD.revents = 0;
-
-
-	//If SERVER_POLL_TIMEOUT is greater than 0, set the timeout for recvfrom.
-	if(SERVER_POLL_TIMEOUT >= 0){
-		struct timeval timeoutValue;
-
-		if(SERVER_POLL_TIMEOUT == 0){
-			//Make sure our polling function is non-blocking.
-			setNonBlockMode(masterFD.fd, 1);
-
-			timeoutValue.tv_sec = 0;
-			timeoutValue.tv_usec = 0;
-		}else{
-			timeoutValue.tv_sec = SERVER_POLL_TIMEOUT / 1000;
-			timeoutValue.tv_usec = (SERVER_POLL_TIMEOUT - timeoutValue.tv_sec * 1000) * 1000;
-		}
-
-		//Set the timeout for recvfrom!
-		if(setsockopt(masterFD.fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeoutValue, sizeof(timeoutValue)) != 0){
-			serverPrintError("setsockopt()", serverGetLastError());
-
-			return(0);
-		}
-	}
-
-
-	socketInfo masterInfo;
-	memset(&masterInfo.addr, 0, sizeof(struct sockaddr_storage));
-	if(af == AF_INET){
-		//Fill up the address!
-		if(!inet_pton(af, tempIP, (char *)&(((struct sockaddr_in *)&masterInfo.addr)->sin_addr))){
-			((struct sockaddr_in *)&masterInfo.addr)->sin_addr.s_addr = INADDR_ANY;
-			strcpy(tempIP, "INADDR_ANY");
-		}
-
-		((struct sockaddr_in *)&masterInfo.addr)->sin_family = af;
-		((struct sockaddr_in *)&masterInfo.addr)->sin_port = htons(port);
-
-		masterInfo.addrSize = sizeof(struct sockaddr_in);
-	}else if(af == AF_INET6){
-		//Create a variable for our IPv6 socket info and fill it up!
-		if(!inet_pton(af, tempIP, (char *)&(((struct sockaddr_in6 *)&masterInfo.addr)->sin6_addr))){
-			((struct sockaddr_in6 *)&masterInfo.addr)->sin6_addr = in6addr_any;
-			strcpy(tempIP, "in6addr_any");
-		}
-
-		((struct sockaddr_in6 *)&masterInfo.addr)->sin6_family = af;
-		((struct sockaddr_in6 *)&masterInfo.addr)->sin6_port = htons(port);
-
-		masterInfo.addrSize = sizeof(struct sockaddr_in6);
-	}
-	//Bind our socket to the address!
-	if(bind(masterFD.fd, (struct sockaddr *)&masterInfo.addr, sizeof(struct sockaddr_in)) == SOCKET_ERROR){
-		serverPrintError("bind()", serverGetLastError());
-
-		return(0);
-	}
-
-	//Start listening for connections if the socket is using TCP!
-	if(protocol == IPPROTO_TCP){
-		if(listen(masterFD.fd, SOMAXCONN) == SOCKET_ERROR){
-			serverPrintError("listen()", serverGetLastError());
-
-			return(0);
-		}
-	}
-
-	//Initialize our buffer for received data!
-	server->lastBuffer = malloc((server->maxBufferSize + 1) * sizeof(*server->lastBuffer));
-	if(server->lastBuffer == NULL){
-		puts("Error: Could not allocate sufficient memory for the receive buffer.\n");
-
-		return(0);
-	}
-	server->lastBufferLength = 0;
-	server->lastBuffer[server->lastBufferLength] = '\0';
-
-
-	//Initialize our connectionHandler and push the master socket into it!
-	if(!handlerInit(&server->connectionHandler, SERVER_MAX_SOCKETS, &masterFD, &masterInfo)){
-		puts("Error: Could not create a handle for the master socket.\n");
-
-		return(0);
-	}
-
-
-	server->discFunc = discFunc;
-
-
-	printf("Server was initialized successfully!\n\n"
-		   "Listening on %s:%u...\n\n\n", tempIP, port);
-
 
 	return(1);
 }
 
 
+#ifdef _WIN32
+// Cleanup the Winsock API.
 void serverCleanup(){
-	#ifdef _WIN32
 	WSACleanup();
+}
+#endif
+
+
+static int getAddressFamily(const char *ip){
+	char buffer[16];
+	if(inet_pton(AF_INET, ip, buffer)){
+		return(AF_INET);
+	}else if(inet_pton(AF_INET6, ip, buffer)){
+		return(AF_INET6);
+	}
+
+	return(SERVER_DEFAULT_ADDRESS_FAMILY);
+}
+
+// If mode is 0, make socket functions block. Otherwise, make them non-blocking.
+static return_t setNonBlockMode(const int fd, unsigned long mode){
+	#ifdef _WIN32
+		return(!ioctlsocket(fd, FIONBIO, &mode));
+	#else
+		int flags = fcntl(fd, F_GETFL, 0);
+		if(flags < 0){
+			return(0);
+		}
+
+		flags = mode ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+		return(!fcntl(fd, F_SETFL, flags));
 	#endif
 }

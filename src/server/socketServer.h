@@ -2,32 +2,38 @@
 #define socketServer_h
 
 
-#include <stdio.h>
+#include <stdint.h>
 
 #include "socketHandler.h"
+#include "../utilTypes.h"
 
 
 typedef struct socketServer socketServer;
+typedef struct socketServerConfig {
+	int type;
+	int protocol;
+	char ip[46];
+	uint16_t port;
+} socketServerConfig;
+
 typedef struct socketServer {
 	socketHandler connectionHandler;
 
 	int type;
 	int protocol;
-
-	char *lastBuffer;
-	int lastBufferLength;
-    size_t maxBufferSize;
-
-	void (*discFunc)(socketServer *server, const socketInfo *client);
 } socketServer;
 
 
-unsigned char serverSetup();
-
-unsigned char serverInit(socketServer *server, const int type, const int protocol, char *ip, size_t ipLength, unsigned short port, size_t bufferSize,
-                         void (*discFunc)(socketServer *server, const socketInfo *client));
-
+#ifdef _WIN32
+return_t serverSetup();
 void serverCleanup();
+#else
+#define serverSetup() 1
+#define serverCleanup() ;
+#endif
+
+void serverConfigInit(socketServerConfig *cfg, const int type, const int protocol);
+return_t serverInit(socketServer *server, socketServerConfig cfg);
 
 
 #endif

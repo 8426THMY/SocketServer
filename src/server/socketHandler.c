@@ -1,205 +1,171 @@
 #include "socketHandler.h"
 
 
-void socketInfoInit(socketInfo *info, socketHandler *handler){
-	//Assign them a unique I.D.!
-	info->id = handler->idStack[handler->size];
-	//If this isn't the master socket, initialize the buffer array!
-	if(info->id != 0){
-		info->bufferArray = malloc(sizeof(*info->bufferArray));
-		info->bufferArraySize = 0;
-		info->bufferArrayCapacity = 1;
 
-		//info->lastUpdateTick = currentTick;
-	}else{
-		info->bufferArray = NULL;
-		info->bufferArraySize = 0;
-		info->bufferArrayCapacity = 0;
+// If the size of a socket handle is not the same as that of a pollfd, we
+// should trigger a compile-time error, as our polling functions won't work.
+#define COMPILE_TIME_ERROR(condition) ((void)sizeof(char[1 - 2*!!(condition)]));
+
+
+// Forward-declare any helper functions!
+#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
+static return_t socketHandlerResize(socketHandler *handler);
+#endif
+
+
+return_t socketHandlerInit(socketHandler *handler, const size_t capacity, const socketHandle *masterHandle, const socketInfo *masterInfo){
+	socketHandle *handle;
+	const socketInfo *lastInfo;
+	size_t id;
+
+	// This line checks a compile-time condition and should generate no code.
+	COMPILE_TIME_ERROR(sizeof(socketInfo *) > sizeof(socketHandle));
+
+	// Allocate enough memory for the maximum number of connected sockets.
+	socketInfo *info = malloc(capacity * (sizeof(socketInfo) + sizeof(socketHandle)));
+	if(info == NULL){
+		return(-1);
+	}
+	handler->info     = info;
+	handler->lastInfo = info - 1;
+
+	// Initialize the socket handle array.
+	handle = (socketHandle *)&info[capacity];
+	handler->handles    = handle;
+	handler->lastHandle = handle - 1;
+
+	// Initialize the socket handles and information.
+	lastInfo = (socketInfo *)handle;
+	for(id = 0; info < lastInfo; ++handle, ++info, ++id){
+		*((socketInfo **)handle) = info;
+		info->handle = NULL;
+		info->id = id;
 	}
 
-	//Add the new socketInfo to our handler!
-	handler->info[handler->size] = *info;
+	handler->capacity = capacity;
+	handler->nfds = 0;
 
-	//Create a link for the new I.D. and remove it from the stack!
-	handler->idLinks[handler->idStack[handler->size]] = handler->size;
-	handler->idStack[handler->size] = 0;
-	++handler->size;
-}
-
-unsigned char handlerInit(socketHandler *handler, size_t capacity, struct pollfd *fd, socketInfo *info){
-	if(capacity > 0){
-		handler->fds = NULL;
-		handler->info = NULL;
-		handler->idStack = NULL;
-		handler->idLinks = NULL;
-
-		handler->capacity = 0;
-		handler->size = 0;
-
-		return(handlerResize(handler, capacity) && handlerAdd(handler, fd, info));
-	}
-
-	return(0);
-}
-
-
-unsigned char socketInfoBufferResize(socketInfo *info, size_t capacity){
-	char **tempData = realloc(info->bufferArray, sizeof(*info->bufferArray) * capacity);
-	if(tempData != NULL){
-		info->bufferArray = tempData;
-		info->bufferArrayCapacity = capacity;
-
-		return(1);
-	}
-
-
-	return(0);
-}
-
-//Add a message to a buffer array!
-void socketInfoBufferAdd(socketInfo *info, char *buffer, size_t bufferLength){
-	if(info->bufferArraySize == info->bufferArrayCapacity){
-		socketInfoBufferResize(info, info->bufferArrayCapacity * 2);
-	}
-	info->bufferArray[info->bufferArraySize] = malloc(bufferLength);
-	memcpy(info->bufferArray[info->bufferArraySize], buffer, bufferLength);
-	++info->bufferArraySize;
+	// Add the master socket to the connection handler.
+	return(socketHandlerAdd(handler, masterHandle, masterInfo));
 }
 
 
-unsigned char handlerResize(socketHandler *handler, size_t capacity){
-	if(capacity != handler->capacity){
-		//Resize the pollfd array!
-		void *tempBuffer = realloc(handler->fds, capacity * sizeof(*handler->fds));
-		if(tempBuffer != NULL){
-			handler->fds = tempBuffer;
-		}else{
+// Add a new socket to a socket handler!
+return_t socketHandlerAdd(socketHandler *handler, const socketHandle *handle, const socketInfo *info){
+	if(handler->nfds >= handler->capacity){
+		#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
+			if(socketHandlerResize(handler) < 0){
+				return(-1);
+			}
+		#else
 			return(0);
-		}
-		//Resize the socketInfo array!
-		tempBuffer = realloc(handler->info, capacity * sizeof(*handler->info));
-		if(tempBuffer != NULL){
-			handler->info = tempBuffer;
+		#endif
+	}
+
+	{
+		socketHandle *newHandle = ++handler->lastHandle;
+		socketInfo *newInfo = *((socketInfo **)newHandle);
+
+		*newHandle = *handle;
+		newInfo->handle           = newHandle;
+		newInfo->address          = info->address;
+		newInfo->addressSize      = info->addressSize;
+
+		handler->lastInfo = newInfo;
+		++handler->nfds;
+	}
+
+	return(1);
+}
+
+// Remove a socket from a socket handler!
+return_t socketHandlerRemove(socketHandler *handler, socketInfo *info){
+	// Make sure we don't remove the master socket.
+	if(info == socketHandlerMasterInfo(handler)){
+		return(0);
+	}
+
+	// Move the last socket information's handle over
+	// to fill the gap left by the one we're removing.
+	*info->handle = *handler->lastHandle;
+	handler->lastInfo->handle = info->handle;
+	// The now-unused last handle should now store
+	// a pointer to this socket's information.
+	info->handle = NULL;
+	*((socketInfo **)handler->lastHandle) = info;
+
+	--handler->lastHandle;
+	--handler->nfds;
+
+
+	return(1);
+}
+
+
+void socketHandlerDelete(socketHandler *handler){
+	free(handler->info);
+}
+
+
+#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
+static return_t socketHandlerResize(socketHandler *handler){
+	uintptr_t handleOffset;
+	socketHandle *handle;
+	socketHandle *oldHandle;
+	const socketInfo *lastInfo;
+
+	size_t remainingHandles = socketHandler->nfds;
+	size_t remainingInfo    = remainingHandles;
+
+	size_t capacity = handler->capacity << 1;
+	// Resize the connection handler's array.
+	socketInfo *info = realloc(handler->info, capacity * (sizeof(socketInfo) + sizeof(socketHandle)));
+	if(buffer == NULL){
+		return(-1);
+	}
+	handle    = (socketHandle *)&info[capacity];
+	oldHandle = (socketHandle *)&info[handler->capacity];
+	socketHandler->capacity = capacity;
+
+	// Negative offsets should work despite the overflow.
+	handleOffset = ((uintptr_t)handle) - ((uintptr_t)sc->handles);
+	// Move the array pointers using the offsets from the old arrays to the new one.
+	sc->info = info;
+	sc->lastInfo = (socketInfo *)(((uintptr_t)sc->lastInfo) + ((uintptr_t)info) - ((uintptr_t)sc->info));
+	sc->handles = handle;
+	sc->lastHandle = (socketHandle *)(((uintptr_t)sc->lastHandle) + handleOffset);
+
+	// Use capacity as an ID iterator for new socket information objects.
+	capacity -= 1;
+	for(; info < lastInfo; ++info, ++handle){
+		// Copy the file descriptors that we're using.
+		if(remainingHandles > 0){
+			*handle = *oldHandle;
+			++oldHandle;
+			--remainingHandles;
+
+		// Unused handles should point to the
+		// corresponding socket information.
 		}else{
-			free(handler->fds);
-
-			return(0);
+			*((socketInfo **)handle) = info;
 		}
-		//Resize the idStack!
-		tempBuffer = realloc(handler->idStack, capacity * sizeof(*handler->idStack));
-		if(tempBuffer != NULL){
-			handler->idStack = tempBuffer;
+
+		if(remainingInfo > 0){
+			// We need to adjust the pointers for our
+			// existing socket information handles.
+			if(socketInfoValid(info)){
+				info->handle = (socketHandle *)(((uintptr_t)info->handle) + handleOffset);
+				--remainingInfo;
+			}
+
+		// Initialize the new socket information objects.
 		}else{
-			free(handler->fds);
-			free(handler->info);
-
-			return(0);
+			info->handle = NULL;
+			info->id = capacity;
+			++capacity;
 		}
-		//Resize the idLinks array!
-		tempBuffer = realloc(handler->idLinks, capacity * sizeof(*handler->idLinks));
-		if(tempBuffer != NULL){
-			handler->idLinks = tempBuffer;
-		}else{
-			free(handler->fds);
-			free(handler->info);
-			free(handler->idStack);
-
-			return(0);
-		}
-
-		//Fill the I.D. stack!
-		size_t i;
-		for(i = handler->capacity; i < capacity; ++i){
-			handler->idStack[i] = i;
-			handler->idLinks[i] = 0;
-		}
-
-		handler->capacity = capacity;
-
-
-		return(1);
 	}
 
-
-	return(0);
+	return(1);
 }
-
-unsigned char handlerAdd(socketHandler *handler, struct pollfd *fd, socketInfo *info){
-	if(fd != NULL || info != NULL){
-		//Add the user's details to the fd array!
-		if(fd != NULL){
-			handler->fds[handler->size] = *fd;
-		}
-		//Add the user's details to the socketInfo array!
-		if(info != NULL){
-			socketInfoInit(info, handler);
-		}
-
-
-		return(1);
-	}
-
-
-	return(0);
-}
-
-unsigned char handlerRemove(socketHandler *handler, size_t socketID){
-	if(handler != NULL && socketID < handler->capacity && handler->idLinks[socketID] != 0){
-		--handler->size;
-
-		size_t i = handler->idLinks[socketID];
-		//Make sure we clear this socket's buffer array.
-		socketInfoBufferClear(&handler->info[i]);
-		free(&handler->info[i].bufferArray);
-
-		//Now shift everything over!
-		while(i < handler->size){
-			handler->fds[i] = handler->fds[i + 1];
-			handler->info[i] = handler->info[i + 1];
-			--handler->idLinks[handler->info[i].id];
-
-			++i;
-		}
-
-		//Put the old user's I.D. at the front of the stack and clear the link.
-		handler->idStack[handler->size] = socketID;
-		handler->idLinks[socketID] = 0;
-
-
-		return(1);
-	}
-
-
-	return(0);
-}
-
-
-//Clear a socket's buffer array.
-//We don't free the actual array variable because we want to keep its current size.
-void socketInfoBufferClear(socketInfo *info){
-	size_t i;
-	for(i = 0; i < info->bufferArraySize; ++i){
-		free(info->bufferArray[i]);
-	}
-	info->bufferArraySize = 0;
-}
-
-void handlerClear(socketHandler *handler){
-	if(handler->fds != NULL){
-		free(handler->fds);
-	}
-	if(handler->info != NULL){
-		size_t i;
-		for(i = 0; i < handler->size; ++i){
-			socketInfoBufferClear(&handler->info[i]);
-			free(&handler->info[i].bufferArray);
-		}
-		free(handler->info);
-	}
-	if(handler->idStack != NULL){
-		free(handler->idStack);
-	}
-	if(handler->idLinks != NULL){
-		free(handler->idLinks);
-	}
-}
+#endif

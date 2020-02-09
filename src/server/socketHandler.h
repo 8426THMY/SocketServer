@@ -3,49 +3,54 @@
 
 
 #include <stdlib.h>
+#include <stdint.h>
 
 #include "socketShared.h"
+#include "../utilTypes.h"
+
+
+#define socketInfoValid(info) ((info)->handle != NULL)
+#define socketHandlerMasterHandle(handler) ((handler)->handles)
+#define socketHandlerMasterInfo(handler)   ((handler)->info)
 
 
 typedef struct socketInfo {
+	// Pointer to the handle described by this socket information.
+	// If this object is inactive, this pointer should be NULL.
+	socketHandle *handle;
+
+	// This is the socket information's position in the connection handler's array.
 	size_t id;
-
-	struct sockaddr_storage addr;
-	int addrSize;
-
-	//Array containing the data received from the client this update.
-	char **bufferArray;
-	size_t bufferArraySize;
-	size_t bufferArrayCapacity;
-
-	unsigned long lastUpdateTick;
+	struct sockaddr_storage address;
+	socketAddressLength addressSize;
 } socketInfo;
 
 typedef struct socketHandler {
-	struct pollfd *fds;
+	// Array of socket information, one for each socket handle.
 	socketInfo *info;
-	//Stack containing unused client I.D.s.
-	size_t *idStack;
-	//Stores which fd each client I.D. is linked to.
-	size_t *idLinks;
+	// This points to the last socket information we added, which
+	// is not necessarily the last socket information in our array.
+	socketInfo *lastInfo;
 
+	// Array of pollfds used for TCP polling.
+	socketHandle *handles;
+	// We always use the last handle in the array when adding a new socket.
+	// Unused handles store pointers to the socket information they used last.
+	socketHandle *lastHandle;
+
+	// Total number of allocated file descriptors.
 	size_t capacity;
-	size_t size;
+	// Total number of used file descriptors used for TCP polling.
+	size_t nfds;
 } socketHandler;
 
 
-void socketInfoInit(socketInfo *info, socketHandler *handler);
-unsigned char handlerInit(socketHandler *handler, size_t capacity, struct pollfd *fd, socketInfo *info);
+return_t socketHandlerInit(socketHandler *handler, const size_t capacity, const socketHandle *masterHandle, const socketInfo *masterInfo);
 
-unsigned char socketInfoBufferResize(socketInfo *info, size_t capacity);
-void socketInfoBufferAdd(socketInfo *info, char *buffer, size_t bufferLength);
+return_t socketHandlerAdd(socketHandler *handler, const socketHandle *handle, const socketInfo *info);
+return_t socketHandlerRemove(socketHandler *handler, socketInfo *info);
 
-unsigned char handlerResize(socketHandler *handler, size_t capacity);
-unsigned char handlerAdd(socketHandler *handler, struct pollfd *fd, socketInfo *info);
-unsigned char handlerRemove(socketHandler *handler, size_t pos);
-
-void socketInfoBufferClear(socketInfo *info);
-void handlerClear(socketHandler *handler);
+void socketHandlerDelete(socketHandler *handler);
 
 
 #endif

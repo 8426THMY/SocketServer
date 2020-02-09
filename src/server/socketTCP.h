@@ -2,15 +2,24 @@
 #define socketTCP_h
 
 
-#include <stdio.h>
+#include <stddef.h>
 
-#include "socketServer.h"
+#include "socketHandler.h"
+#include "../utilTypes.h"
 
 
-unsigned char serverListenTCP(socketServer *server);
-unsigned char serverSendTCP(const socketServer *server, const socketInfo *client, const char *buffer, const size_t bufferLength);
-void serverDisconnectTCP(socketServer *server, const socketInfo *client);
-void serverCloseTCP(socketServer *server);
+#define serverGetNextSocketTCP(info) for(; !socketInfoValid(info); ++info);
+
+
+typedef struct socketInfo socketInfo;
+typedef struct socketServer socketServer;
+
+
+int serverListenTCP(socketHandler *handler);
+int serverReceiveTCP(socketInfo *curInfo, char *buffer);
+return_t serverSendTCP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength);
+void serverDisconnectTCP(socketHandler *handler, socketInfo *client);
+void serverCloseTCP(socketHandler *handler);
 
 
 #endif

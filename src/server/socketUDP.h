@@ -2,15 +2,20 @@
 #define socketUDP_h
 
 
-#include <stdio.h>
+#include <stddef.h>
 
-#include "socketServer.h"
+#include "socketHandler.h"
+#include "../utilTypes.h"
 
 
-unsigned char serverListenUDP(socketServer *server);
-unsigned char serverSendUDP(const socketServer *server, const socketInfo *client, const char *buffer, const size_t bufferLength);
-void serverDisconnectUDP(socketServer *server, const socketInfo *client);
-void serverCloseUDP(socketServer *server);
+typedef struct socketInfo socketInfo;
+typedef struct socketServer socketServer;
+
+
+return_t serverListenUDP(socketHandler *handler);
+return_t serverSendUDP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength);
+void serverDisconnectUDP(socketHandler *handler, socketInfo *client);
+void serverCloseUDP(socketHandler *handler);
 
 
 #endif

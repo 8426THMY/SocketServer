@@ -7,157 +7,226 @@
 #include "socketShared.h"
 
 
-unsigned char serverListenTCP(socketServer *server){
-	//Check if the any of the sockets have changed state.
-	int changedSockets = pollFunc(server->connectionHandler.fds, server->connectionHandler.size, SERVER_POLL_TIMEOUT);
-	//If the result was SOCKET_ERROR, print the error code!
+/*
+** Poll the file descriptors and return the number of
+** sockets that changed state or -1 if there was an error.
+*/
+int serverListenTCP(socketHandler *handler){
+	const int changedSockets = pollFunc(handler->handles, handler->nfds, SERVER_POLL_TIMEOUT);
+	// Make sure there wasn't an error while polling.
 	if(changedSockets == SOCKET_ERROR){
+		#ifdef SERVER_DEBUG
 		serverPrintError(SERVER_POLL_FUNC, serverGetLastError());
+		#endif
+		return(-1);
+	}else{
+		// Check whether the master socket is ready to accept new connections.
+		if(flagsAreSet(socketHandlerMasterHandle(handler)->revents, POLLIN)){
+			socketInfo newInfo;
+			socketHandle newHandle;
 
-		return(0);
+			newInfo.addressSize = sizeof(struct sockaddr);
+			newHandle.fd = accept(socketHandlerMasterHandle(handler)->fd, (struct sockaddr *)&newInfo.address, &newInfo.addressSize);
 
-	//Otherwise, if some sockets changed, handle them!
-	}else if(changedSockets > 0){
-		//If the master socket has returned with POLLIN, we're ready to accept a new connection!
-		if(server->connectionHandler.fds[0].revents & POLLIN){
-			//Store information pertaining to whoever sent the data!
-			struct pollfd tempFD;
-			socketInfo tempInfo;
-			memset(&tempInfo.addr, 0, sizeof(tempInfo.addr));
-			tempInfo.addrSize = sizeof(tempInfo.addr);
-
-			tempFD.fd = accept(server->connectionHandler.fds[0].fd, (struct sockaddr *)&tempInfo.addr, &tempInfo.addrSize);
-
-			//If the connection was accepted successfully, add it to the connectionHandler!
-			if(tempFD.fd != INVALID_SOCKET){
-				tempFD.events = POLLIN;
-				tempFD.revents = 0;
-
-				handlerAdd(&server->connectionHandler, &tempFD, &tempInfo);
-			}else{
+			if(newHandle.fd == INVALID_SOCKET){
+				#ifdef SERVER_DEBUG
 				serverPrintError("accept()", serverGetLastError());
+				#endif
+
+			// If the connection was accepted successfully,
+			// add the new socket to our connection handler!
+			}else{
+				const return_t success = (
+					newHandle.events  = POLLIN,
+					newHandle.revents = 0,
+					socketHandlerAdd(handler, &newHandle, &newInfo)
+				);
+				// The connection handler is full or could not be resized.
+				if(success <= 0){
+					socketclose(newHandle.fd);
+					#ifdef SERVER_DEBUG
+					puts("Warning: Incoming connection rejected - connection handler is full.\n");
+					#endif
+				}
 			}
 
-			//Reset the master socket's return events!
-			server->connectionHandler.fds[0].revents = 0;
-
-			--changedSockets;
-		}
-
-		size_t i;
-		//Now check if the other sockets have changed!
-		for(i = 1; changedSockets > 0 && i < server->connectionHandler.size; ++i){
-			//Handle the client's events!
-			if(server->connectionHandler.fds[i].revents != 0){
-				//Store this stuff in case some clients disconnect!
-				const size_t oldID = server->connectionHandler.info[i].id;
-				const size_t oldSize = server->connectionHandler.size;
-
-				//Check if the client has sent something!
-				if(server->connectionHandler.fds[i].revents & POLLIN){
-					//Check what they've sent!
-					server->lastBufferLength = recv(server->connectionHandler.fds[i].fd, server->lastBuffer, server->maxBufferSize, 0);
-
-					//The client has sent something, so add it to their buffer array!
-					if(server->lastBufferLength > 0){
-						server->lastBuffer[server->lastBufferLength] = '\0';
-						//Add one to the length because we need to get the null-terminator.
-						socketInfoBufferAdd(&server->connectionHandler.info[i], server->lastBuffer, server->lastBufferLength + 1);
-					}else{
-						//The client has disconnected, so disconnect them from our side!
-						if(server->lastBufferLength == 0){
-							serverDisconnectTCP(server, &server->connectionHandler.info[i]);
-
-						//There was an error, so disconnect the client!
-						}else{
-							serverPrintError("recv()", serverGetLastError());
-							serverDisconnectTCP(server, &server->connectionHandler.info[i]);
-						}
-					}
-				}
-
-				//Check if we haven't disconnected the client!
-				if(server->connectionHandler.idLinks[oldID] != 0){
-					//If they've hung up, disconnect them from our end!
-					if(server->connectionHandler.fds[i].revents & POLLHUP){
-						serverDisconnectTCP(server, &server->connectionHandler.info[i]);
-
-					//Otherwise, clear their return events!
-					}else{
-						server->connectionHandler.fds[i].revents = 0;
-					}
-				}
-				//Move the iterator back if we have to!
-				if(oldSize > server->connectionHandler.size){
-					//If the current client didn't disconnect, just find their new index!
-					if(server->connectionHandler.idLinks[oldID] != 0){
-						i = server->connectionHandler.idLinks[oldID];
-
-					//Otherwise, skip back using the difference in size. It's a bit inaccurate, but that's fine.
-					}else{
-						i += server->connectionHandler.size;
-						if(i > oldSize){
-							i -= oldSize;
-						}else{
-							i = 1;
-						}
-					}
-				}
-
-				--changedSockets;
-
-			//If the client has timed out, disconnect them!
-			#warning "TCP timeout isn't implemented yet!"
-			}else if(0){
-				serverDisconnectTCP(server, &server->connectionHandler.info[i]);
-				--i;
-			}
+			socketHandlerMasterHandle(handler)->revents = 0;
+			return(changedSockets - 1);
 		}
 	}
 
+	return(changedSockets);
+}
+
+/*
+** If the socket has sent data, store it in "buffer" and return the size of the buffer.
+** Otherwise, return 0 if they have disconnected and -1 if they were idle.
+*/
+int serverReceiveTCP(socketInfo *curInfo, char *buffer){
+	const socketHandle curHandle = *curInfo->handle;
+	curInfo->handle->revents = 0;
+
+	// The socket has changed state.
+	if(curHandle.revents != 0){
+		// The socket has disconnected.
+		if(flagsAreSet(curHandle.revents, POLLHUP)){
+			return(0);
+
+		// The socket has sent some data.
+		}else if(flagsAreSet(curHandle.revents, POLLIN)){
+			const int bufferLength = recv(curHandle.fd, buffer, SERVER_MAX_BUFFER_SIZE, 0);
+			// Error sending data.
+			if(bufferLength < 0){
+				#ifdef SERVER_DEBUG
+				serverPrintError("recv()", serverGetLastError());
+				#endif
+			}
+
+			return(bufferLength);
+		}
+	}
+
+	// If the socket was idle, return -1. This means that if there was
+	// an error receiving data from the client, they are considered idle.
+	return(-1);
+}
+
+// Send data to a socket.
+return_t serverSendTCP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+	if(send(client->handle->fd, buffer, bufferLength, 0) < 0){
+		#ifdef SERVER_DEBUG
+		serverPrintError("send()", serverGetLastError());
+		#endif
+		return(0);
+	}
 
 	return(1);
 }
 
-//Send a user a message!
-unsigned char serverSendTCP(const socketServer *server, const socketInfo *client, const char *buffer, const size_t bufferLength){
-	size_t clientPos = server->connectionHandler.idLinks[client->id];
-	if(client->id < server->connectionHandler.capacity && clientPos != 0){
-		//If the client exists, send the buffer to them!
-		if(send(server->connectionHandler.fds[clientPos].fd, buffer, bufferLength, 0) >= 0){
-			return(1);
-		}else{
-			serverPrintError("send()", serverGetLastError());
-		}
+// Disconnect a socket.
+void serverDisconnectTCP(socketHandler *handler, socketInfo *client){
+	socketclose(client->handle->fd);
+	socketHandlerRemove(handler, client);
+}
+
+// Shutdown the server.
+void serverCloseTCP(socketHandler *handler){
+	socketInfo *curInfo = &handler->info[1];
+	const socketInfo *lastInfo = &handler->info[handler->nfds];
+
+	// Disconnect all of the clients.
+	for(; curInfo < lastInfo; ++curInfo){
+		serverDisconnectTCP(handler, curInfo);
+	}
+	// Close the master socket.
+	socketclose(socketHandlerMasterHandle(handler)->fd);
+
+	socketHandlerDelete(handler);
+}
+
+
+#if 0
+// Poll each socket and update their buffers and flags.
+return_t serverListenTCP(socketHandler *handler){
+	int changedSockets = pollFunc(handler->handles, handler->nfds, SERVER_POLL_TIMEOUT);
+	// Make sure there wasn't an error while polling.
+	if(changedSockets == SOCKET_ERROR){
+		#ifdef SERVER_DEBUG
+		serverPrintError(SERVER_POLL_FUNC, serverGetLastError());
+		#endif
+		return(0);
 	}else{
-		printf("Error: Tried to send data to an invalid socket.\n");
-	}
+		socketInfo *curInfo = &handler->info[1];
+		size_t remainingSockets = handler->nfds - 1;
 
-	return(0);
-}
+		// Check whether the master socket is ready to accept new connections.
+		if(flagsAreSet(socketHandlerMasterHandle(handler)->fd, POLLIN)){
+			socketInfo newInfo;
+			socketHandle newHandle;
 
-//Disconnect a user!
-void serverDisconnectTCP(socketServer *server, const socketInfo *client){
-	size_t clientPos = server->connectionHandler.idLinks[client->id];
-	if(client->id < server->connectionHandler.capacity && clientPos != 0){
-		if(server->discFunc != NULL){
-			(*server->discFunc)(server, client);
+			newInfo.addressSize = sizeof(struct sockaddr);
+			newHandle.fd = accept(socketHandlerMasterHandle(handler)->fd, (struct sockaddr *)&newInfo.address, &newInfo.addressSize);
+
+			if(newHandle.fd == INVALID_SOCKET){
+				#ifdef SERVER_DEBUG
+				serverPrintError("accept()", serverGetLastError());
+				#endif
+
+			// If the connection was accepted successfully,
+			// add the new socket to our connection handler!
+			}else{
+				const return_t success = (
+					newInfo.flags     = SERVER_SOCKET_INFO_CONNECTED,
+					newHandle.events  = POLLIN | POLLHUP,
+					newHandle.revents = 0,
+					socketHandlerAdd(handler, &newHandle, &newInfo)
+				);
+				#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
+				// Memory allocation failure.
+				if(success < 0){
+					return(-1);
+				}
+				#else
+				// The connection handler is full.
+				if(success == 0){
+					socketclose(newHandle.fd);
+					#ifdef SERVER_DEBUG
+					puts("Warning: Incoming connection rejected - connection handler is full.\n");
+					#endif
+				}
+				#endif
+			}
+
+			socketHandlerMasterHandle(handler)->revents = 0;
+			--changedSockets;
 		}
 
-		socketclose(server->connectionHandler.fds[clientPos].fd);
-		handlerRemove(&server->connectionHandler, client->id);
-	}
-}
+		// Check each socket's flags to see if they've changed state.
+		while(remainingSockets > 0){
+			if(socketInfoValid(curInfo)){
+				const socketHandle curHandle = *curInfo->handle;
 
-//Shutdown the server!
-void serverCloseTCP(socketServer *server){
-	size_t i = server->connectionHandler.size;
-	while(i > 1){
-		--i;
-		serverDisconnectTCP(server, &server->connectionHandler.info[i]);
-	}
-	socketclose(server->connectionHandler.fds[0].fd);
-	handlerClear(&server->connectionHandler);
+				// The socket has changed state.
+				if(curHandle.revents != 0){
+					// The socket has disconnected.
+					if(flagsAreSet(curHandle.revents, POLLHUP)){
+						flagsSet(curInfo->flags, SERVER_SOCKET_INFO_DISCONNECTED);
 
-	free(server->lastBuffer);
+					// The socket has sent some data.
+					}else if(flagsAreSet(curHandle.revents, POLLIN)){
+						curInfo->lastBufferLength = recv(curHandle.fd, curInfo->lastBuffer, SERVER_MAX_BUFFER_SIZE, 0);
+
+						switch(curInfo->lastBufferLength){
+							// Error sending data.
+							case -1:
+								flagsSet(curInfo->flags, SERVER_SOCKET_INFO_ERROR);
+								#ifdef SERVER_DEBUG
+								serverPrintError("recv()", serverGetLastError());
+								#endif
+							break;
+
+							// Socket disconnected gracefully.
+							case 0:
+								flagsSet(curInfo->flags, SERVER_SOCKET_INFO_DISCONNECTED);
+							break;
+
+							// Data received successfully.
+							default:
+								flagsSet(curInfo->flags, SERVER_SOCKET_INFO_SENT_DATA);
+						}
+					}
+
+					curInfo->handle->revents = 0;
+					--changedSockets;
+				}
+
+				--remainingSockets;
+			}
+
+			++curInfo;
+		}
+	}
+
+	return(1);
 }
+#endif
