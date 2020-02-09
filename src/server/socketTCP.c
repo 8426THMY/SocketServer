@@ -11,13 +11,14 @@
 ** Poll the file descriptors and return the number of
 ** sockets that changed state or -1 if there was an error.
 */
-int serverListenTCP(socketHandler *handler){
+int serverListenTCP(socketServer *handler){
 	const int changedSockets = pollFunc(handler->handles, handler->nfds, SERVER_POLL_TIMEOUT);
 	// Make sure there wasn't an error while polling.
 	if(changedSockets == SOCKET_ERROR){
 		#ifdef SERVER_DEBUG
 		serverPrintError(SERVER_POLL_FUNC, serverGetLastError());
 		#endif
+
 		return(-1);
 	}else{
 		// Check whether the master socket is ready to accept new connections.
@@ -43,10 +44,10 @@ int serverListenTCP(socketHandler *handler){
 				);
 				// The connection handler is full or could not be resized.
 				if(success <= 0){
-					socketclose(newHandle.fd);
 					#ifdef SERVER_DEBUG
 					puts("Warning: Incoming connection rejected - connection handler is full.\n");
 					#endif
+					socketclose(newHandle.fd);
 				}
 			}
 
@@ -62,9 +63,9 @@ int serverListenTCP(socketHandler *handler){
 ** If the socket has sent data, store it in "buffer" and return the size of the buffer.
 ** Otherwise, return 0 if they have disconnected and -1 if they were idle.
 */
-int serverReceiveTCP(socketInfo *curInfo, char *buffer){
-	const socketHandle curHandle = *curInfo->handle;
-	curInfo->handle->revents = 0;
+int serverReceiveTCP(socketInfo *client, char *buffer){
+	const socketHandle curHandle = *client->handle;
+	client->handle->revents = 0;
 
 	// The socket has changed state.
 	if(curHandle.revents != 0){
@@ -92,11 +93,12 @@ int serverReceiveTCP(socketInfo *curInfo, char *buffer){
 }
 
 // Send data to a socket.
-return_t serverSendTCP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+return_t serverSendTCP(const socketServer *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
 	if(send(client->handle->fd, buffer, bufferLength, 0) < 0){
 		#ifdef SERVER_DEBUG
 		serverPrintError("send()", serverGetLastError());
 		#endif
+
 		return(0);
 	}
 
@@ -104,13 +106,13 @@ return_t serverSendTCP(const socketHandler *handler, const socketInfo *client, c
 }
 
 // Disconnect a socket.
-void serverDisconnectTCP(socketHandler *handler, socketInfo *client){
+void serverDisconnectTCP(socketServer *handler, socketInfo *client){
 	socketclose(client->handle->fd);
 	socketHandlerRemove(handler, client);
 }
 
 // Shutdown the server.
-void serverCloseTCP(socketHandler *handler){
+void serverCloseTCP(socketServer *handler){
 	socketInfo *curInfo = &handler->info[1];
 	const socketInfo *lastInfo = &handler->info[handler->nfds];
 
@@ -121,7 +123,7 @@ void serverCloseTCP(socketHandler *handler){
 	// Close the master socket.
 	socketclose(socketHandlerMasterHandle(handler)->fd);
 
-	socketHandlerDelete(handler);
+	serverClose(handler);
 }
 
 
@@ -161,20 +163,13 @@ return_t serverListenTCP(socketHandler *handler){
 					newHandle.revents = 0,
 					socketHandlerAdd(handler, &newHandle, &newInfo)
 				);
-				#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
-				// Memory allocation failure.
-				if(success < 0){
-					return(-1);
-				}
-				#else
-				// The connection handler is full.
-				if(success == 0){
-					socketclose(newHandle.fd);
+				// The connection handler is full or could not be resized.
+				if(success <= 0){
 					#ifdef SERVER_DEBUG
 					puts("Warning: Incoming connection rejected - connection handler is full.\n");
 					#endif
+					socketclose(newHandle.fd);
 				}
-				#endif
 			}
 
 			socketHandlerMasterHandle(handler)->revents = 0;
@@ -199,10 +194,10 @@ return_t serverListenTCP(socketHandler *handler){
 						switch(curInfo->lastBufferLength){
 							// Error sending data.
 							case -1:
-								flagsSet(curInfo->flags, SERVER_SOCKET_INFO_ERROR);
 								#ifdef SERVER_DEBUG
 								serverPrintError("recv()", serverGetLastError());
 								#endif
+								flagsSet(curInfo->flags, SERVER_SOCKET_INFO_ERROR);
 							break;
 
 							// Socket disconnected gracefully.

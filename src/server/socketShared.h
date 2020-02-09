@@ -75,7 +75,7 @@
 	};
 
 	#define socketHandle struct pollfd
-	#define socketAddressLength int
+	#define sockAddrLen_t int
 
 
 	int inet_pton(int af, const char *src, char *dst);
@@ -145,7 +145,7 @@
 		};
 
 		#define socketHandle struct pollfd
-		#define socketAddressLength socklen_t
+		#define sockAddrLen_t socklen_t
 	#endif
 #endif
 

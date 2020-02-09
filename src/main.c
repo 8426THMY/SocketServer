@@ -4,7 +4,7 @@
 #include "utilTypes.h"
 
 
-#define TEST_UDP
+#define TEST_TCP
 #ifdef TEST_UDP
 #include "server/socketUDP.h"
 #elif defined(TEST_TCP)
@@ -13,14 +13,16 @@
 
 
 /**
-1. UDP client-finding should be optional.
-2. A way of letting the developer handle new connections would be nice.
+UDP client-finding should be optional.
 **/
 
 
 // Forward-declare our helper functions!
-static void disconnectFunc(socketHandler *handler, const socketInfo *client);
-static void bufferFunc(socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength);
+static void connectFunc(const socketInfo *client);
+#ifdef TEST_TCP
+static void disconnectFunc(const socketInfo *client);
+#endif
+static void bufferFunc(const socketInfo *client, const char *buffer, const size_t bufferLength);
 
 
 int main(int argc, char *argv[]){
@@ -32,44 +34,64 @@ int main(int argc, char *argv[]){
 		serverConfigInit(&cfg, SOCK_DGRAM, IPPROTO_UDP);
 
 		if(serverInit(&server, cfg)){
-			//
+			for(;;){
+				socketInfo *curClient;
+				const size_t nfdsOld = server.nfds;
+				char buffer[SERVER_MAX_BUFFER_SIZE];
+				const int bufferLength = serverReceiveUDP(&server, &curClient, buffer);
 
-			serverCloseUDP(&server.connectionHandler);
+				// A new socket has just connected.
+				if(server.nfds != nfdsOld){
+					connectFunc(server.lastInfo);
+				}
+				// The socket has sent some data.
+				if(bufferLength >= 0){
+					bufferFunc(curClient, buffer, bufferLength);
+				}
+			}
+
+			serverCloseUDP(&server);
 		}
 		#elif defined(TEST_TCP)
 		serverConfigInit(&cfg, SOCK_STREAM, IPPROTO_TCP);
 
 		if(serverInit(&server, cfg)){
 			for(;;){
-				int changedSockets = serverListenTCP(&server.connectionHandler);
+				const size_t nfdsOld = server.nfds;
+				int changedSockets = serverListenTCP(&server);
 				// An error has occurred.
 				if(changedSockets < 0){
 					break;
 				}else{
-					socketInfo *curClient = &server.connectionHandler.info[1];
+					socketInfo *curClient = &server.info[1];
+
+					// A new socket has just connected.
+					if(server.nfds != nfdsOld){
+						connectFunc(server.lastInfo);
+					}
 
 					// Keep looping until we've found every client whose state has changed.
 					while(changedSockets > 0){
-						serverGetNextSocketTCP(curClient);
+						serverGetNextSocket(curClient);
 						char buffer[SERVER_MAX_BUFFER_SIZE];
 						const int bufferLength = serverReceiveTCP(curClient, buffer);
 
 						// The socket has disconnected.
 						if(bufferLength == 0){
-							disconnectFunc(&server.connectionHandler, curClient);
-							serverDisconnectTCP(&server.connectionHandler, curClient);
+							disconnectFunc(curClient);
+							serverDisconnectTCP(&server, curClient);
 							--changedSockets;
 
 						// The socket has sent some data.
 						}else if(bufferLength > 0){
-							bufferFunc(&server.connectionHandler, curClient, buffer, bufferLength);
+							bufferFunc(curClient, buffer, bufferLength);
 							--changedSockets;
 						}
 					}
 				}
 			}
 
-			serverCloseTCP(&server.connectionHandler);
+			serverCloseTCP(&server);
 		}
 		#endif
     }
@@ -84,10 +106,16 @@ int main(int argc, char *argv[]){
 }
 
 
-static void disconnectFunc(socketHandler *handler, const socketInfo *client){
-	printf("Client #%u has been disconnected.\n", client->id);
+static void connectFunc(const socketInfo *client){
+	printf("Client #%u has connected.\n", client->id);
 }
 
-static void bufferFunc(socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+#ifdef TEST_TCP
+static void disconnectFunc(const socketInfo *client){
+	printf("Client #%u has disconnected.\n", client->id);
+}
+#endif
+
+static void bufferFunc(const socketInfo *client, const char *buffer, const size_t bufferLength){
 	printf("Client #%u has sent: %s\n", client->id, buffer);
 }

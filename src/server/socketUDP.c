@@ -7,12 +7,66 @@
 #include "socketShared.h"
 
 
-return_t serverListenUDP(socketHandler *handler){
-	return(0);
+int serverReceiveUDP(socketServer *handler, socketInfo **client, char *buffer){
+	socketInfo newInfo;
+	const int bufferLength = (newInfo.addressSize = sizeof(struct sockaddr), recvfrom(
+		socketHandlerMasterHandle(handler)->fd, buffer, SERVER_MAX_BUFFER_SIZE, 0,
+		(struct sockaddr *)&newInfo.address, &newInfo.addressSize
+	));
+
+	// Check whether there were any errors that caused us to stop receiving.
+	if(bufferLength < 0){
+		const int errorID = serverGetLastError();
+		if(errorID != EWOULDBLOCK && errorID != ECONNRESET){
+			#ifdef SERVER_DEBUG
+			serverPrintError("recvfrom()", errorID);
+			#endif
+		}
+		*client = NULL;
+	}else{
+		socketInfo *curInfo = &handler->info[1];
+		size_t remainingSockets = handler->nfds - 1;
+
+		// Find the new socket if we've already received data from it.
+		for(; remainingSockets > 0; --remainingSockets){
+			serverGetNextSocket(curInfo);
+			// If the socket already exists, exit the loop.
+			if(
+				newInfo.addressSize == curInfo->addressSize &&
+				memcmp(&newInfo.address, &curInfo->address, newInfo.addressSize)
+			){
+				*client = curInfo;
+				return(bufferLength);
+			}
+		}
+
+		// If the socket is new, add it to the connection handler!
+		{
+			socketHandle newHandle;
+			const return_t success = (
+				newHandle.events  = POLLIN,
+				newHandle.revents = 0,
+				socketHandlerAdd(handler, &newHandle, &newInfo)
+			);
+			// The connection handler is full or could not be resized.
+			if(success <= 0){
+				#ifdef SERVER_DEBUG
+				puts("Warning: Incoming data rejected - connection handler is full.\n");
+				#endif
+
+				return(-1);
+			}
+
+			// Keep a pointer to the new socket.
+			*client = handler->lastInfo;
+		}
+	}
+
+	return(bufferLength);
 }
 
 // Send data to a socket.
-return_t serverSendUDP(const socketHandler *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+return_t serverSendUDP(const socketServer *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
 	if(sendto(socketHandlerMasterHandle(handler)->fd, buffer, bufferLength, 0, (struct sockaddr *)&client->address, client->addressSize) < 0){
 		#ifdef SOCKET_DEBUG
 		serverPrintError("send()", serverGetLastError());
@@ -24,12 +78,12 @@ return_t serverSendUDP(const socketHandler *handler, const socketInfo *client, c
 }
 
 // Disconnect a socket.
-void serverDisconnectUDP(socketHandler *handler, socketInfo *client){
+void serverDisconnectUDP(socketServer *handler, socketInfo *client){
 	socketHandlerRemove(handler, client);
 }
 
 // Shutdown the server.
-void serverCloseUDP(socketHandler *handler){
+void serverCloseUDP(socketServer *handler){
 	socketInfo *curInfo = &handler->info[1];
 	const socketInfo *lastInfo = &handler->info[handler->nfds];
 
@@ -38,7 +92,7 @@ void serverCloseUDP(socketHandler *handler){
 		serverDisconnectUDP(handler, curInfo);
 	}
 
-	socketHandlerDelete(handler);
+	serverClose(handler);
 }
 
 #if 0
@@ -53,9 +107,8 @@ return_t serverListenUDP(socketHandler *handler){
 			(struct sockaddr *)&newInfo.address, &newInfo.addressSize
 		);
 
-		// If no data was received, we can exit the loop.
-		if(newInfo.lastBufferLength <= 0){
-			// Check whether there were any errors that caused us to stop receiving.
+		// Check whether there were any errors that caused us to stop receiving.
+		if(newInfo.lastBufferLength < 0){
 			const int errorID = serverGetLastError();
 			if(errorID != EWOULDBLOCK && errorID != ECONNRESET){
 				#ifdef SERVER_DEBUG
@@ -92,24 +145,16 @@ return_t serverListenUDP(socketHandler *handler){
 				socketHandle newHandle;
 				const return_t success = (
 					newInfo.flags     = SERVER_SOCKET_INFO_CONNECTED,
-					newHandle.events  = POLLIN | POLLHUP,
+					newHandle.events  = POLLIN,
 					newHandle.revents = 0,
 					socketHandlerAdd(handler, &newHandle, &newInfo)
 				);
-				#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
-				// Memory allocation failure.
-				if(success < 0){
-					return(-1);
-				}
-				#else
-				// The connection handler is full.
-				if(success == 0){
+				// The connection handler is full or could not be resized.
+				if(success <= 0){
 					#ifdef SERVER_DEBUG
-					puts("Warning: Rejected data from new socket - connection handler is full.\n");
+					puts("Warning: Incoming data rejected - connection handler is full.\n");
 					#endif
-					continue;
 				}
-				#endif
 
 				// Keep a pointer to the new socket.
 				curInfo = handler->lastInfo;
