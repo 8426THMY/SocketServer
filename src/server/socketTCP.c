@@ -11,7 +11,7 @@
 ** Poll the file descriptors and return the number of
 ** sockets that changed state or -1 if there was an error.
 */
-int serverListenTCP(socketServer *handler){
+int serverListenTCP(socketServer *const restrict handler){
 	const int changedSockets = pollFunc(handler->handles, handler->nfds, SERVER_POLL_TIMEOUT);
 	// Make sure there wasn't an error while polling.
 	if(changedSockets == SOCKET_ERROR){
@@ -63,7 +63,7 @@ int serverListenTCP(socketServer *handler){
 ** If the socket has sent data, store it in "buffer" and return the size of the buffer.
 ** Otherwise, return 0 if they have disconnected and -1 if they were idle.
 */
-int serverReceiveTCP(socketInfo *client, char *buffer){
+int serverReceiveTCP(socketInfo *const restrict client, char *const restrict buffer){
 	const socketHandle curHandle = *client->handle;
 	client->handle->revents = 0;
 
@@ -93,7 +93,7 @@ int serverReceiveTCP(socketInfo *client, char *buffer){
 }
 
 // Send data to a socket.
-return_t serverSendTCP(const socketServer *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+return_t serverSendTCP(const socketServer *const restrict handler, const socketInfo *const restrict client, const char *const restrict buffer, const size_t bufferLength){
 	if(send(client->handle->fd, buffer, bufferLength, 0) < 0){
 		#ifdef SERVER_DEBUG
 		serverPrintError("send()", serverGetLastError());
@@ -106,15 +106,15 @@ return_t serverSendTCP(const socketServer *handler, const socketInfo *client, co
 }
 
 // Disconnect a socket.
-void serverDisconnectTCP(socketServer *handler, socketInfo *client){
+void serverDisconnectTCP(socketServer *const restrict handler, socketInfo *const restrict client){
 	socketclose(client->handle->fd);
 	socketHandlerRemove(handler, client);
 }
 
 // Shutdown the server.
-void serverCloseTCP(socketServer *handler){
+void serverCloseTCP(socketServer *const restrict handler){
 	socketInfo *curInfo = &handler->info[1];
-	const socketInfo *lastInfo = &handler->info[handler->nfds];
+	const socketInfo *const lastInfo = &handler->info[handler->nfds];
 
 	// Disconnect all of the clients.
 	for(; curInfo < lastInfo; ++curInfo){
@@ -129,7 +129,7 @@ void serverCloseTCP(socketServer *handler){
 
 #if 0
 // Poll each socket and update their buffers and flags.
-return_t serverListenTCP(socketHandler *handler){
+return_t serverListenTCP(socketHandler *const restrict handler){
 	int changedSockets = pollFunc(handler->handles, handler->nfds, SERVER_POLL_TIMEOUT);
 	// Make sure there wasn't an error while polling.
 	if(changedSockets == SOCKET_ERROR){

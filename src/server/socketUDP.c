@@ -7,7 +7,7 @@
 #include "socketShared.h"
 
 
-int serverReceiveUDP(socketServer *handler, socketInfo **client, char *buffer){
+int serverReceiveUDP(socketServer *const restrict handler, socketInfo **const restrict client, char *const restrict buffer){
 	socketInfo newInfo;
 	const int bufferLength = (newInfo.addressSize = sizeof(struct sockaddr), recvfrom(
 		socketHandlerMasterHandle(handler)->fd, buffer, SERVER_MAX_BUFFER_SIZE, 0,
@@ -66,7 +66,7 @@ int serverReceiveUDP(socketServer *handler, socketInfo **client, char *buffer){
 }
 
 // Send data to a socket.
-return_t serverSendUDP(const socketServer *handler, const socketInfo *client, const char *buffer, const size_t bufferLength){
+return_t serverSendUDP(const socketServer *const restrict handler, const socketInfo *const restrict client, const char *const restrict buffer, const size_t bufferLength){
 	if(sendto(socketHandlerMasterHandle(handler)->fd, buffer, bufferLength, 0, (struct sockaddr *)&client->address, client->addressSize) < 0){
 		#ifdef SOCKET_DEBUG
 		serverPrintError("send()", serverGetLastError());
@@ -78,14 +78,14 @@ return_t serverSendUDP(const socketServer *handler, const socketInfo *client, co
 }
 
 // Disconnect a socket.
-void serverDisconnectUDP(socketServer *handler, socketInfo *client){
+void serverDisconnectUDP(socketServer *const restrict handler, socketInfo *const restrict client){
 	socketHandlerRemove(handler, client);
 }
 
 // Shutdown the server.
-void serverCloseUDP(socketServer *handler){
+void serverCloseUDP(socketServer *const restrict handler){
 	socketInfo *curInfo = &handler->info[1];
-	const socketInfo *lastInfo = &handler->info[handler->nfds];
+	const socketInfo *const lastInfo = &handler->info[handler->nfds];
 
 	// Disconnect all of the clients.
 	for(; curInfo < lastInfo; ++curInfo){
@@ -96,7 +96,7 @@ void serverCloseUDP(socketServer *handler){
 }
 
 #if 0
-return_t serverListenUDP(socketHandler *handler){
+return_t serverListenUDP(socketHandler *const restrict handler){
 	// Keep receiving data while the buffer is not empty.
 	for(;;){
 		socketInfo newInfo;

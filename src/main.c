@@ -18,11 +18,11 @@ UDP client-finding should be optional.
 
 
 // Forward-declare our helper functions!
-static void connectFunc(const socketInfo *client);
+static void connectFunc(const socketInfo *const restrict client);
 #ifdef TEST_TCP
-static void disconnectFunc(const socketInfo *client);
+static void disconnectFunc(const socketInfo *const restrict client);
 #endif
-static void bufferFunc(const socketInfo *client, const char *buffer, const size_t bufferLength);
+static void bufferFunc(const socketInfo *const restrict client, const char *const restrict buffer, const size_t bufferLength);
 
 
 int main(int argc, char *argv[]){
@@ -106,16 +106,16 @@ int main(int argc, char *argv[]){
 }
 
 
-static void connectFunc(const socketInfo *client){
+static void connectFunc(const socketInfo *const restrict client){
 	printf("Client #%u has connected.\n", client->id);
 }
 
 #ifdef TEST_TCP
-static void disconnectFunc(const socketInfo *client){
+static void disconnectFunc(const socketInfo *const restrict client){
 	printf("Client #%u has disconnected.\n", client->id);
 }
 #endif
 
-static void bufferFunc(const socketInfo *client, const char *buffer, const size_t bufferLength){
+static void bufferFunc(const socketInfo *const restrict client, const char *const restrict buffer, const size_t bufferLength){
 	printf("Client #%u has sent: %s\n", client->id, buffer);
 }

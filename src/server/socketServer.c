@@ -13,14 +13,14 @@
 
 
 // Forward-declare any helper functions!
-static int getAddressFamily(const char *ip);
+static int getAddressFamily(const char *const restrict ip);
 static return_t setNonBlockMode(const int fd, unsigned long mode);
 #ifdef SERVER_SOCKET_HANDLER_REALLOCATE
-static return_t socketHandlerResize(socketServer *handler);
+static return_t socketHandlerResize(socketServer *const restrict handler);
 #endif
 
 
-void serverConfigInit(socketServerConfig *cfg, const int type, const int protocol){
+void serverConfigInit(socketServerConfig *const restrict cfg, const int type, const int protocol){
 	cfg->type = type;
 	cfg->protocol = protocol;
 	cfg->ip[0] = '\0';
@@ -50,7 +50,7 @@ void serverCleanup(){
 }
 #endif
 
-return_t serverInit(socketServer *server, socketServerConfig cfg){
+return_t serverInit(socketServer *const restrict server, socketServerConfig cfg){
 	int af;
 	socketHandle masterHandle;
 	socketInfo masterInfo;
@@ -163,7 +163,7 @@ return_t serverInit(socketServer *server, socketServerConfig cfg){
 }
 
 
-return_t socketHandlerInit(socketServer *handler, const size_t capacity, const socketHandle *masterHandle, const socketInfo *masterInfo){
+return_t socketHandlerInit(socketServer *const restrict handler, const size_t capacity, const socketHandle *const restrict masterHandle, const socketInfo *const restrict masterInfo){
 	socketHandle *handle;
 	const socketInfo *lastInfo;
 	size_t id = 0;
@@ -200,7 +200,7 @@ return_t socketHandlerInit(socketServer *handler, const size_t capacity, const s
 }
 
 // Add a new socket to a socket handler!
-return_t socketHandlerAdd(socketServer *handler, const socketHandle *handle, const socketInfo *info){
+return_t socketHandlerAdd(socketServer *const restrict handler, const socketHandle *const restrict handle, const socketInfo *info){
 	if(handler->nfds >= handler->capacity){
 		#ifdef SERVER_SOCKET_HANDLER_REALLOCATE
 			if(socketHandlerResize(handler) < 0){
@@ -212,8 +212,8 @@ return_t socketHandlerAdd(socketServer *handler, const socketHandle *handle, con
 	}
 
 	{
-		socketHandle *newHandle = ++handler->lastHandle;
-		socketInfo *newInfo = *((socketInfo **)newHandle);
+		socketHandle *const newHandle = ++handler->lastHandle;
+		socketInfo *const newInfo = *((socketInfo **)newHandle);
 
 		*newHandle = *handle;
 		newInfo->handle           = newHandle;
@@ -228,7 +228,7 @@ return_t socketHandlerAdd(socketServer *handler, const socketHandle *handle, con
 }
 
 // Remove a socket from a socket handler!
-return_t socketHandlerRemove(socketServer *handler, socketInfo *info){
+return_t socketHandlerRemove(socketServer *const restrict handler, socketInfo *const restrict info){
 	// Make sure we don't remove the master socket.
 	if(info == socketHandlerMasterInfo(handler)){
 		return(0);
@@ -250,12 +250,12 @@ return_t socketHandlerRemove(socketServer *handler, socketInfo *info){
 	return(1);
 }
 
-void socketHandlerDelete(socketServer *handler){
+void socketHandlerDelete(socketServer *const restrict handler){
 	free(handler->info);
 }
 
 
-static int getAddressFamily(const char *ip){
+static int getAddressFamily(const char *const restrict ip){
 	char buffer[16];
 	if(inet_pton(AF_INET, ip, buffer)){
 		return(AF_INET);
@@ -282,7 +282,7 @@ static return_t setNonBlockMode(const int fd, unsigned long mode){
 }
 
 #ifdef SERVER_SOCKET_HANDLER_REALLOCATE
-static return_t socketHandlerResize(socketHandler *handler){
+static return_t socketHandlerResize(socketHandler *const restrict handler){
 	uintptr_t handleOffset;
 	socketHandle *handle;
 	socketHandle *oldHandle;

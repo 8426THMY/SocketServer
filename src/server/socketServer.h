@@ -56,7 +56,7 @@ typedef struct socketServer {
 } socketServer;
 
 
-void serverConfigInit(socketServerConfig *cfg, const int type, const int protocol);
+void serverConfigInit(socketServerConfig *const restrict cfg, const int type, const int protocol);
 
 #ifdef _WIN32
 return_t serverSetup();
@@ -65,13 +65,13 @@ void serverCleanup();
 #define serverSetup() 1
 #define serverCleanup() ;
 #endif
-return_t serverInit(socketServer *server, socketServerConfig cfg);
+return_t serverInit(socketServer *const restrict server, socketServerConfig cfg);
 #define serverClose(server) socketHandlerDelete(server)
 
-return_t socketHandlerInit(socketServer *handler, const size_t capacity, const socketHandle *masterHandle, const socketInfo *masterInfo);
-return_t socketHandlerAdd(socketServer *handler, const socketHandle *handle, const socketInfo *info);
-return_t socketHandlerRemove(socketServer *handler, socketInfo *info);
-void socketHandlerDelete(socketServer *handler);
+return_t socketHandlerInit(socketServer *const restrict handler, const size_t capacity, const socketHandle *const restrict masterHandle, const socketInfo *const restrict masterInfo);
+return_t socketHandlerAdd(socketServer *const restrict handler, const socketHandle *const restrict handle, const socketInfo *const restrict info);
+return_t socketHandlerRemove(socketServer *const restrict handler, socketInfo *const restrict info);
+void socketHandlerDelete(socketServer *const restrict handler);
 
 
 #endif

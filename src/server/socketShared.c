@@ -4,12 +4,12 @@
 #ifdef SERVER_USE_POLL
 	#ifdef _WIN32
 		WINSOCK_API_LINKAGE int WSAAPI WSAPoll(struct pollfd *fds, ULONG nfds, int timeout);
-		int pollFunc(struct pollfd *fds, size_t nfds, int timeout){ return(WSAPoll(fds, nfds, timeout)); }
+		int pollFunc(struct pollfd *const restrict fds, size_t nfds, int timeout){ return(WSAPoll(fds, nfds, timeout)); }
 	#else
-		int pollFunc(struct pollfd *fds, size_t nfds, int timeout){ return(poll(fds, nfds, timeout)); }
+		int pollFunc(struct pollfd *const restrict fds, size_t nfds, int timeout){ return(poll(fds, nfds, timeout)); }
 	#endif
 #else
-	int pollFunc(struct pollfd *fds, size_t nfds, int timeout){
+	int pollFunc(struct pollfd *const restrict fds, size_t nfds, int timeout){
 		int changedSockets;
 		const size_t numSockets = nfds < SERVER_MAX_SOCKETS ? nfds : SERVER_MAX_SOCKETS;
 		struct timeval timeoutValue;
@@ -77,7 +77,7 @@ int serverGetLastError(){
 }
 
 // Print a socket-related error code!
-void serverPrintError(const char *func, const int code){
+void serverPrintError(const char *const restrict func, const int code){
 	printf(
 		"There was a problem with socket function %s!\n"
 		"Error: %i\n", func, code

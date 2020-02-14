@@ -154,11 +154,11 @@
 #endif
 
 
-int pollFunc(struct pollfd *fdarray, size_t nfds, int timeout);
+int pollFunc(struct pollfd *const restrict fdarray, size_t nfds, int timeout);
 
 #ifdef SERVER_DEBUG
 int serverGetLastError();
-void serverPrintError(const char *func, const int code);
+void serverPrintError(const char *const restrict func, const int code);
 #endif
 
 
